@@ -2,9 +2,12 @@
 #
 # Clones an existing VM template into a new VM instance.
 #
+# Author: Michael Bruskov <mixanemca@yandex.ru>
+#
 
 progname=${0##*/} 
-progversion=0.1
+progversion=1.2
+knife_args=
 
 shopt -s nocasematch
 
@@ -30,6 +33,29 @@ EO
 EO
 } 
 
+add_arg() {
+	local arg="$1"
+	local val="$2"
+
+	echo "${knife_args}" | egrep -q -- "${arg}"
+	if [[ "$?" -eq 0 ]]; then
+		knife_args=$(echo "${knife_args}" | sed -e "s|"${arg}" [a-zA-Z0-9._/'-]*|"${arg}" "${val}" |")
+		return
+	fi
+
+	if [[ "$knife_args" != "" ]]; then
+		knife_args="${knife_args} $(printf "%s %s" "${arg}" "${val}")"
+	else
+		knife_args="$(printf "%s %s" "${arg}" "${val}")"
+	fi
+}
+
+config_args() {
+	if [[ -n "${config}"  ]]; then
+		(printf "%s %s" "--config" "${config}")
+	fi
+}
+
 err_argument() {
 	echo -e "Not defined required option: "$1"" >&2
 	echo; usage; exit 1
@@ -39,39 +65,39 @@ shortopts="c:d:hn:r:s:t:v"
 longopts="config:,ip:,name:,domain:,datastore:,dns:,run-list:,host:,template:,help,version" 
 
 # defaults variables
-domain="mixanemca.ru"
-dns="10.10.12.90"
-template="CentOS7_template"
-runlist="role[LinuxServer],recipe[yum::cleanup]"
+domain="mixanemca.ru"; add_arg "--cdomain" "${domain}"
+dns="10.10.12.90"; add_arg "--cdnsips" "${dns}"
+template="CentOS7_template"; add_arg "--template" "${template}"
+runlist="role[LinuxServer],recipe[yum::cleanup]"; add_arg "--run-list" "${runlist}"
 
-args=$(getopt -s bash --options ${shortopts} --longoptions ${longopts} --name ${progname} -- "$@") 
+args=$(getopt -s bash --options "${shortopts}" --longoptions "${longopts}" --name "${progname}" -- "$@") 
 
 eval set -- "${args}" 
 
 while true; do 
-	case $1 in 
+	case "$1" in 
 		-h|--help) 
 			usage; exit 0 ;; 
 		-v|--version) 
 			echo "${progversion}"; exit 0 ;; 
 		-c|--config)
-			shift; config="$1" ;;
+			shift; config="$1"; add_arg "--config" "${config}" ;;
 		--ip) 
-			shift; ip="$1" ;; 
+			shift; ip="$1"; add_arg "--cips" "${ip}" ;; 
 		-n|--name)
-			shift; name="$1" ;; 
+			shift; name="$1"; add_arg "--chostname" "${name}" ;; 
 		-d|--domain)
-			shift; domain="$1" ;;
+			shift; domain="$1"; add_arg "--cdomain" "${domain}" ;;
 		-s|--datastore)
-			shift; datastore="$1" ;;
+			shift; datastore="$1"; add_arg "--datastore" "${datastore}" ;;
 		--dns)
-			shift; dns="$1" ;;
+			shift; dns="$1"; add_arg "--cdnsips" "${dns}" ;;
 		-r|--run-list)
-			shift; runlist="$1" ;;
+			shift; runlist="$1"; add_arg "--run-list" "${runlist}" ;;
 		--host)
 			shift; host="$1" ;;
 		-t|--template)
-			shift; template="$1" ;;
+			shift; template="$1"; add_arg "--template" "${template}" ;;
 		--) 
 			shift; break ;; 
 		*) 
@@ -80,19 +106,17 @@ while true; do
 	shift
 done
 
-if test -z ${config}; then
-	err_argument "-c|--config"
-elif test -z ${name}; then
+if [[ -z "${name}" ]]; then
 	err_argument "-n|--name"
-elif test -z ${datastore}; then
+elif [[ -z "${datastore}" ]]; then
 	err_argument "-s|--datastore"
-elif test -z ${host}; then
+elif [[ -z "${host}" ]]; then
 	err_argument "--host"
-elif test -z ${ip}; then
+elif [[ -z "${ip}" ]]; then
 	err_argument "--ip"
 fi
 
-if ! [[ ${ip} =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+if ! [[ "${ip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
 	echo -e "IP addres must be write in CIDR notation\nExample: 10.10.3.230/24" >&2
 	exit 1
 fi
@@ -112,38 +136,30 @@ EO
 echo "--------------------------------------------------------------------------------"
 echo -ne "Are you shure? [yes/no]: "
 read answer
-if ! [[ ${answer} =~ ^(y|yes)$ ]]; then
+if ! [[ "${answer}" =~ ^(y|yes)$ ]]; then
 	exit 0
 fi
 
-knife vsphere vm clone ${name} \
-	--template ${template} \
-	--datastore ${datastore} \
-	--cips ${ip} \
-	--cdnsips ${dns} \
-	--chostname ${name} \
-	--cdomain ${domain} \
+knife vsphere vm clone "${name}" \
 	--start true \
 	--bootstrap true \
-	--node-name ${name} \
 	--json-attributes "{\"set_fqdn\": \"${name}.${domain}\"}" \
-	--run-list ${runlist} \
-	--config ${config}
+	${knife_args} $(config_args)
 
 if [[ "$?" -ne 0 ]]; then
-	echo "Failed clone VM ${name}"
+	echo "Failed clone VM "${name}""
 	exit 2
 fi
 
-knife vsphere vm migrate ${name} \
-	--dest-host ${host} \
-	--dest-datastore ${datastore} \
+echo
+
+knife vsphere vm migrate "${name}" \
+	--dest-host "${host}" \
+	--dest-datastore "${datastore}" \
 	--resource-pool BDC \
-	--config ${config}
+	$(config_args)
 
 echo
-knife vsphere vm state ${name} \
-	--config ${config}
+knife vsphere vm state "${name}" $(config_args)
 echo
-knife node show ${name} \
-	--config ${config}
+knife node show "${name}" $(config_args)
