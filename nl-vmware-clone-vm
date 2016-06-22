@@ -1,0 +1,149 @@
+#!/bin/bash 
+#
+# Clones an existing VM template into a new VM instance.
+#
+
+progname=${0##*/} 
+progversion=0.1
+
+shopt -s nocasematch
+
+usage() { 
+	cat <<-EO
+Usage: ${progname} [options] 
+
+Options: 
+EO
+	cat <<-EO | column -s\& -t 
+
+  -c --config & path to knife.rb config
+  -d --domain & set VM domain
+  --dns & set VM nameserver
+  -h --help & show this message 
+  --host & set server name of VM host system
+  --ip & set VM ipv4 address
+  -n --name & set VM hostname
+  -r --run-list & set VM run-list
+  -s --datastore & set datastore name
+  -t --template & set template name
+  -v --version & show version information 
+EO
+} 
+
+err_argument() {
+	echo -e "Not defined required option: "$1"" >&2
+	echo; usage; exit 1
+}
+
+shortopts="c:d:hn:r:s:t:v" 
+longopts="config:,ip:,name:,domain:,datastore:,dns:,run-list:,host:,template:,help,version" 
+
+# defaults variables
+domain="mixanemca.ru"
+dns="10.10.12.90"
+template="CentOS7_template"
+runlist="role[LinuxServer],recipe[yum::cleanup]"
+
+args=$(getopt -s bash --options ${shortopts} --longoptions ${longopts} --name ${progname} -- "$@") 
+
+eval set -- "${args}" 
+
+while true; do 
+	case $1 in 
+		-h|--help) 
+			usage; exit 0 ;; 
+		-v|--version) 
+			echo "${progversion}"; exit 0 ;; 
+		-c|--config)
+			shift; config="$1" ;;
+		--ip) 
+			shift; ip="$1" ;; 
+		-n|--name)
+			shift; name="$1" ;; 
+		-d|--domain)
+			shift; domain="$1" ;;
+		-s|--datastore)
+			shift; datastore="$1" ;;
+		--dns)
+			shift; dns="$1" ;;
+		-r|--run-list)
+			shift; runlist="$1" ;;
+		--host)
+			shift; host="$1" ;;
+		-t|--template)
+			shift; template="$1" ;;
+		--) 
+			shift; break ;; 
+		*) 
+			shift; break ;; 
+	esac
+	shift
+done
+
+if test -z ${config}; then
+	err_argument "-c|--config"
+elif test -z ${name}; then
+	err_argument "-n|--name"
+elif test -z ${datastore}; then
+	err_argument "-s|--datastore"
+elif test -z ${host}; then
+	err_argument "--host"
+elif test -z ${ip}; then
+	err_argument "--ip"
+fi
+
+if ! [[ ${ip} =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+	echo -e "IP addres must be write in CIDR notation\nExample: 10.10.3.230/24" >&2
+	exit 1
+fi
+echo "Configuration: "
+echo "--------------------------------------------------------------------------------"
+cat <<-EO | column -s\& -tx
+config & ${config}
+datastore & ${datastore}
+dns & ${dns}
+domain & ${domain}
+host & ${host}
+ip & ${ip}
+name & ${name}
+run-list & ${runlist}
+template & ${template}
+EO
+echo "--------------------------------------------------------------------------------"
+echo -ne "Are you shure? [yes/no]: "
+read answer
+if ! [[ ${answer} =~ ^(y|yes)$ ]]; then
+	exit 0
+fi
+
+knife vsphere vm clone ${name} \
+	--template ${template} \
+	--datastore ${datastore} \
+	--cips ${ip} \
+	--cdnsips ${dns} \
+	--chostname ${name} \
+	--cdomain ${domain} \
+	--start true \
+	--bootstrap true \
+	--node-name ${name} \
+	--json-attributes "{\"set_fqdn\": \"${name}.${domain}\"}" \
+	--run-list ${runlist} \
+	--config ${config}
+
+if [[ "$?" -ne 0 ]]; then
+	echo "Failed clone VM ${name}"
+	exit 2
+fi
+
+knife vsphere vm migrate ${name} \
+	--dest-host ${host} \
+	--dest-datastore ${datastore} \
+	--resource-pool BDC \
+	--config ${config}
+
+echo
+knife vsphere vm state ${name} \
+	--config ${config}
+echo
+knife node show ${name} \
+	--config ${config}
